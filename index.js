@@ -21,7 +21,6 @@ const { NODE_ENV } = process.env;
 const DATASET = "mirror_mode_fun";
 const bq = new BigQuery({ projectId: "mixpanel-gtm-training" });
 
-
 async function main(directive = "build") {
 	const startTime = dayjs.utc().subtract(7, "day");
 	const sourceTables = generateTableData(startTime);
@@ -32,12 +31,14 @@ async function main(directive = "build") {
 			log.info("Building tables from source data.");
 			await ensureDataset();
 			await buildTables(sourceTables, identities);
+			await materializeIdentityPermutations();
 			break;
 
 		case "transition":
 			log.info("Transitioning tables to the next day.");
 			await ensureDataset();
 			await transitionIdentityGraph();
+			await materializeIdentityPermutations();
 			break;
 
 		case "delete":
@@ -50,22 +51,29 @@ async function main(directive = "build") {
 			return { sourceTables, identities };
 	}
 
-	return "done";
+	log.info("All operations completed successfully.");
+	return;
 }
+
 
 function generateTableData(startDateObject) {
 	const startTime = startDateObject;
 	const sourceTables = {
+		// a mix of anon_id, and user_id
 		tableDataWebsite: [
+			//pre auth
 			{ event: "page view", anon_id: "foo", user_id: null, timestamp: startTime.subtract(10, "m") },
-			{ event: "scroll", anon_id: "foo", user_id: null, timestamp: startTime.subtract(9, "m") },
-			{ event: "click", anon_id: "foo", user_id: null, timestamp: startTime.subtract(8, "m") },
-			{ event: "dropdown", anon_id: "foo", user_id: null, timestamp: startTime.subtract(7, "m") },
-			{ event: "log in", user_id: "bar", user_id: null, timestamp: startTime.subtract(7, "m") },
-			{ event: "doing stuff", user_id: "bar", anon_id: null, timestamp: startTime.subtract(6, "m") },
-			{ event: "doing more stuff", user_id: "bar", anon_id: null, timestamp: startTime.subtract(5, "m") },
-			{ event: "doing even more stuff", user_id: "bar", anon_id: null, timestamp: startTime.subtract(4, "m") },
+			{ event: "scroll", anon_id: "foo", timestamp: startTime.subtract(9, "m") },
+			{ event: "click", anon_id: "foo", timestamp: startTime.subtract(8, "m") },
+			{ event: "dropdown", anon_id: "foo", timestamp: startTime.subtract(7, "m") },
+			//post auth
+			{ event: "log in", user_id: "bar", timestamp: startTime.subtract(7, "m") },
+			{ event: "doing stuff", user_id: "bar", timestamp: startTime.subtract(6, "m") },
+			{ event: "doing more stuff", user_id: "bar", timestamp: startTime.subtract(5, "m") },
+			{ event: "doing even more stuff", user_id: "bar", timestamp: startTime.subtract(4, "m") },
 		],
+
+		// just master_user_id
 		tableDataERP: [
 			{ event: "account provisioned", master_user_id: "baz", timestamp: startTime.subtract(3, "m") },
 			{ event: "account alive", master_user_id: "baz", timestamp: startTime.subtract(2, "m") },
@@ -85,7 +93,7 @@ function generateIdentities(startDateObject) {
 	return {
 		identityGraphToday: [
 			{
-				cluster_id: "foo_bar",
+				cluster_id: "something_unique_123",
 				as_of: startTime.format("YYYY-MM-DD"),
 				identities: [
 					{
@@ -103,7 +111,7 @@ function generateIdentities(startDateObject) {
 		],
 		identityGraphTomorrow: [
 			{
-				cluster_id: "foo_bar_baz",
+				cluster_id: "something_unique_123",
 				as_of: startTime.add(1, "day").format("YYYY-MM-DD"),
 				identities: [
 					{
@@ -173,25 +181,23 @@ async function buildTables(sourceTables, identities) {
 			if (tableName.includes('identities')) schema = identityClusterSchema;
 			const [tableObj] = await createOrReplaceTable(tableName, schema);
 			log.info(`Table ${tableName} created successfully.`);
-
-			log.info(`Waiting for table ${tableName} to be ready...`);
 			await waitForTableToBeReady(tableObj);
 
-			// KEY FIX: Get a fresh reference to the table before inserting
-			log.info(`Getting fresh table reference for ${tableName}...`);
-			const freshTable = bq.dataset(DATASET).table(tableName);
-
-			// Verify the fresh table exists and is ready
-			await waitForTableToBeReady(freshTable, 30, 500);
-
-			log.info(`Inserting ${rows.length} rows into ${tableName}...`);
-			await insertRows(freshTable, rows);
+			if (tableName.includes('identities')) {
+				// DML INSERTS
+				for (const row of rows) {
+					const sql = rowToInsertSQL(tableName, row);
+					await bq.query({ query: sql, location: "US" });
+				}
+			} else {
+				// Still use streaming for non-identity tables (or migrate if you want)
+				const freshTable = bq.dataset(DATASET).table(tableName);
+				await waitForTableToBeReady(freshTable, 30, 500);
+				await insertRows(freshTable, rows);
+			}
 
 			log.info(`✓ Table ${tableName} created and loaded successfully.`);
-
-			// Small delay between tables
 			await new Promise(res => setTimeout(res, 1000));
-
 		} catch (error) {
 			log.error(`Failed to create/load table ${tableName}:`, error);
 			throw error;
@@ -333,6 +339,24 @@ async function insertRows(tableObj, rows) {
 	}
 }
 
+function rowToInsertSQL(table, row) {
+	// Only for identity cluster table; adapt for others if needed
+	const identitiesArray = row.identities.map(id =>
+		`STRUCT('${id.identity}', '${id.type}', TIMESTAMP('${id.first_seen}'))`
+	).join(', ');
+
+	// Handles DATE (as_of) and STRING (cluster_id)
+	return `
+    INSERT INTO \`${bq.projectId}.${DATASET}.${table}\` (cluster_id, as_of, identities)
+    VALUES (
+      '${row.cluster_id}',
+      '${row.as_of}',
+      [${identitiesArray}]
+    );
+  `;
+}
+
+
 function inferBQSchema(obj) {
 	return Object.entries(obj).map(([name, value]) => ({
 		name,
@@ -351,19 +375,59 @@ function inferBQType(val) {
 }
 
 async function transitionIdentityGraph() {
-	const dataset = bq.dataset(DATASET);
-	const todayTable = dataset.table('identityGraphToday');
-	const tomorrowTable = dataset.table('identityGraphTomorrow');
+	const datasetId = DATASET;
+	const projectId = bq.projectId;
+	const todayTable = `\`${projectId}.${datasetId}.identities_today\``;
+	const tomorrowTable = `\`${projectId}.${datasetId}.identities_tomorrow\``;
 
-	await todayTable.delete({ ignoreNotFound: true });
-	const [metadata] = await tomorrowTable.getMetadata();
-	const [newTodayObj] = await dataset.createTable('identityGraphToday', { schema: metadata.schema });
-	await waitForTableToBeReady(newTodayObj);
+	// 1. Delete all rows from today's table (keeps schema & metadata)
+	const deleteSQL = `DELETE FROM ${todayTable} WHERE TRUE;`;
+	await bq.query({ query: deleteSQL, location: "US" });
 
-	const [rows] = await tomorrowTable.getRows();
-	if (rows.length > 0) await newTodayObj.insert(rows);
-	log.info('identityGraphToday replaced with identityGraphTomorrow');
+	// 2. Insert all rows from tomorrow's table into today's table
+	const insertSQL = `INSERT INTO ${todayTable} SELECT * FROM ${tomorrowTable};`;
+	await bq.query({ query: insertSQL, location: "US" });
+
+	log.info('identityGraphToday replaced with identityGraphTomorrow using DML');
 }
+
+/**
+ * Materialize all unique unordered pairs of identities in the current identities_today table.
+ * Output table: identity_permutations (schema: cluster_id STRING, id1 STRING, id2 STRING)
+ */
+async function materializeIdentityPermutations() {
+	const datasetId = DATASET;
+	const projectId = bq.projectId;
+	const todayTable = `\`${projectId}.${datasetId}.identities_today\``;
+	const permTable = `\`${projectId}.${datasetId}.identity_permutations\``;
+
+	const sql = `
+    CREATE OR REPLACE TABLE ${permTable} AS
+    WITH exploded AS (
+      SELECT
+        cluster_id,
+        id1.identity AS id1,
+        id2.identity AS id2
+      FROM
+        ${todayTable},
+        UNNEST(identities) AS id1,
+        UNNEST(identities) AS id2
+      WHERE
+        id1.identity < id2.identity  -- unique unordered pairs only
+    )
+    SELECT
+      cluster_id,
+      id1,
+      id2
+    FROM exploded
+    ORDER BY cluster_id, id1, id2
+  `;
+
+	log.info("Materializing identity permutations table...");
+	await bq.query({ query: sql, location: "US" });
+	log.info("✓ identity_permutations created/updated!");
+}
+
 
 async function deleteAllTables() {
 	const [tables] = await bq.dataset(DATASET).getTables();
@@ -372,6 +436,9 @@ async function deleteAllTables() {
 }
 
 if (import.meta.url === new URL(`file://${process.argv[1]}`).href) {
-	const results = await main('build');
+	// const build = await main('build');
+	// const transition = await main('transition');
+	const deleteAll = await main('delete');
+	log.info("Script executed successfully.");
 	if (NODE_ENV === "dev") debugger;
 }
