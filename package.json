@@ -1,5 +1,6 @@
 {
   "name": "mirror-tools",
+  "author": "ak@mixpanel.com",
   "version": "1.0.0",
   "main": "index.js",
   "type": "module",
@@ -7,10 +8,10 @@
     "delete": "DIRECTIVE=delete node index.js",
 	"build": "DIRECTIVE=build node index.js",
 	"trans:today": "DIRECTIVE=transition-today node index.js",
-	"trans:tomorrow": "DIRECTIVE=transition-tomorrow node index.js"
+	"trans:tomorrow": "DIRECTIVE=transition-tomorrow node index.js",
+	"reset" : "DIRECTIVE=delete node index.js && DIRECTIVE=build node index.js"
   },
   "keywords": [],
-  "author": "",
   "license": "ISC",
   "description": "",
   "dependencies": {

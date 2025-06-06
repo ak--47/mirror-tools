@@ -373,23 +373,34 @@ async function materializeIdentityPermutations() {
 
 	const sql = `
     CREATE OR REPLACE TABLE ${permTable} AS
-    WITH pairs AS (
+    WITH ids_with_idx AS (
       SELECT
         cluster_id,
-        ARRAY<STRING>[id1.identity, id2.identity] AS ids
-      FROM ${currentTable},
-        UNNEST(identities) AS id1,
-        UNNEST(identities) AS id2
-      WHERE id1.identity < id2.identity
+        identities,
+        ARRAY(
+          SELECT AS STRUCT id.identity, id.type, id.first_seen
+          FROM UNNEST(identities) AS id
+          ORDER BY id.first_seen, id.identity
+        ) AS sorted_ids
+      FROM ${currentTable}
+    ),
+    pairs AS (
+      -- Chain pairs
+      SELECT
+        cluster_id,
+        ARRAY<STRING>[sorted_ids[OFFSET(i-1)].identity, sorted_ids[OFFSET(i)].identity] AS ids
+      FROM ids_with_idx,
+      UNNEST(GENERATE_ARRAY(1, ARRAY_LENGTH(sorted_ids)-1)) AS i
+      WHERE ARRAY_LENGTH(sorted_ids) > 1
 
       UNION ALL
 
+      -- Single identity cluster
       SELECT
         cluster_id,
-        ARRAY<STRING>[id1.identity] AS ids
-      FROM ${currentTable},
-        UNNEST(identities) AS id1
-      WHERE (SELECT COUNT(1) FROM UNNEST(identities)) = 1
+        ARRAY<STRING>[sorted_ids[OFFSET(0)].identity] AS ids
+      FROM ids_with_idx
+      WHERE ARRAY_LENGTH(sorted_ids) = 1
     )
     SELECT
       cluster_id,
@@ -402,6 +413,7 @@ async function materializeIdentityPermutations() {
 	await bq.query({ query: sql, location: "US" });
 	log.info("✓ identity_permutations created/updated!");
 }
+
 
 function inferBQSchema(obj) {
 	return Object.entries(obj).map(([name, value]) => ({
