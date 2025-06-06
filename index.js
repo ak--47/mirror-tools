@@ -17,11 +17,12 @@ import dayjs from "dayjs";
 import utc from "dayjs/plugin/utc.js";
 dayjs.extend(utc);
 import log from './logger.js';
-const { NODE_ENV } = process.env;
+let { NODE_ENV, DIRECTIVE = "" } = process.env;
 const DATASET = "mirror_mode_fun";
 const bq = new BigQuery({ projectId: "mixpanel-gtm-training" });
 
 async function main(directive = "build") {
+	if (DIRECTIVE) directive = DIRECTIVE.toLowerCase();
 	const startTime = dayjs.utc().subtract(7, "day");
 	const sourceTables = generateTableData(startTime);
 	const identities = generateIdentities(startTime);
@@ -61,11 +62,13 @@ function generateTableData(startDateObject) {
 	const sourceTables = {
 		// a mix of anon_id, and user_id
 		tableDataWebsite: [
+
 			//pre auth
 			{ event: "page view", anon_id: "foo", user_id: null, timestamp: startTime.subtract(10, "m") },
 			{ event: "scroll", anon_id: "foo", timestamp: startTime.subtract(9, "m") },
 			{ event: "click", anon_id: "foo", timestamp: startTime.subtract(8, "m") },
 			{ event: "dropdown", anon_id: "foo", timestamp: startTime.subtract(7, "m") },
+
 			//post auth
 			{ event: "log in", user_id: "bar", timestamp: startTime.subtract(7, "m") },
 			{ event: "doing stuff", user_id: "bar", timestamp: startTime.subtract(6, "m") },
@@ -94,7 +97,7 @@ function generateIdentities(startDateObject) {
 		identityGraphToday: [
 			{
 				cluster_id: "something_unique_123",
-				as_of: startTime.format("YYYY-MM-DD"),
+				as_of: startTime.subtract(5, "m").toISOString(),
 				identities: [
 					{
 						identity: "foo",
@@ -112,7 +115,7 @@ function generateIdentities(startDateObject) {
 		identityGraphTomorrow: [
 			{
 				cluster_id: "something_unique_123",
-				as_of: startTime.add(1, "day").format("YYYY-MM-DD"),
+				as_of: startTime.add(1, "day").toISOString(),
 				identities: [
 					{
 						identity: "foo",
@@ -137,7 +140,7 @@ function generateIdentities(startDateObject) {
 
 const identityClusterSchema = [
 	{ name: "cluster_id", type: "STRING" },
-	{ name: "as_of", type: "DATE" },
+	{ name: "as_of", type: "TIMESTAMP" },
 	{
 		name: "identities",
 		type: "RECORD",
@@ -179,8 +182,7 @@ async function buildTables(sourceTables, identities) {
 			log.info(`Creating table ${tableName}...`);
 			let schema = inferBQSchema(rows[0]);
 			if (tableName.includes('identities')) schema = identityClusterSchema;
-			const [tableObj] = await createOrReplaceTable(tableName, schema);
-			log.info(`Table ${tableName} created successfully.`);
+			const [tableObj] = await createOrReplaceTable(tableName, schema);			
 			await waitForTableToBeReady(tableObj);
 
 			if (tableName.includes('identities')) {
@@ -406,6 +408,7 @@ async function materializeIdentityPermutations() {
     WITH exploded AS (
       SELECT
         cluster_id,
+		as_of,
         id1.identity AS id1,
         id2.identity AS id2
       FROM
@@ -436,9 +439,9 @@ async function deleteAllTables() {
 }
 
 if (import.meta.url === new URL(`file://${process.argv[1]}`).href) {
-	// const build = await main('build');
+	const build = await main('build');
 	// const transition = await main('transition');
-	const deleteAll = await main('delete');
+	// const deleteAll = await main('delete');
 	log.info("Script executed successfully.");
 	if (NODE_ENV === "dev") debugger;
 }
