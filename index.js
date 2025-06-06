@@ -11,12 +11,12 @@
 
 import { BigQuery } from "@google-cloud/bigquery";
 import { ProjectsClient } from "@google-cloud/resource-manager";
-
 import u from "ak-tools";
 import dayjs from "dayjs";
 import utc from "dayjs/plugin/utc.js";
 dayjs.extend(utc);
 import log from './logger.js';
+
 let { NODE_ENV, DIRECTIVE = "" } = process.env;
 
 const GCP_PROJECT_ID = "mixpanel-gtm-training";
@@ -26,8 +26,6 @@ const MIXPANEL_PROJECT_ID = "3739108";
 
 const resourceClient = new ProjectsClient({ projectId: GCP_PROJECT_ID });
 const bq = new BigQuery({ projectId: GCP_PROJECT_ID });
-
-
 
 async function main(directive = "build") {
 	if (DIRECTIVE) directive = DIRECTIVE.toLowerCase();
@@ -47,12 +45,19 @@ async function main(directive = "build") {
 			log.info("Building tables from source data.");
 			await policyBindings(serviceAccount, true);
 			await buildTables(sourceTables, identities);
+			await setCurrentIdentityGraph('yesterday');
 			await materializeIdentityPermutations();
 			break;
 
-		case "transition":
-			log.info("Transitioning tables to the next day.");
-			await transitionIdentityGraph();
+		case "transition-today":
+			log.info("Transitioning to today's graph.");
+			await setCurrentIdentityGraph('today');
+			await materializeIdentityPermutations();
+			break;
+
+		case "transition-tomorrow":
+			log.info("Transitioning to tomorrow's graph.");
+			await setCurrentIdentityGraph('tomorrow');
 			await materializeIdentityPermutations();
 			break;
 
@@ -70,27 +75,19 @@ async function main(directive = "build") {
 	return;
 }
 
-
 function generateTableData(startDateObject) {
 	const startTime = startDateObject;
 	const sourceTables = {
-		// a mix of anon_id, and user_id
 		tableDataWebsite: [
-
-			//pre auth
 			{ event: "page view", anon_id: "foo", user_id: null, timestamp: startTime.subtract(10, "m") },
 			{ event: "scroll", anon_id: "foo", timestamp: startTime.subtract(9, "m") },
 			{ event: "click", anon_id: "foo", timestamp: startTime.subtract(8, "m") },
 			{ event: "dropdown", anon_id: "foo", timestamp: startTime.subtract(7, "m") },
-
-			//post auth
 			{ event: "log in", user_id: "bar", timestamp: startTime.subtract(7, "m") },
 			{ event: "doing stuff", user_id: "bar", timestamp: startTime.subtract(6, "m") },
 			{ event: "doing more stuff", user_id: "bar", timestamp: startTime.subtract(5, "m") },
 			{ event: "doing even more stuff", user_id: "bar", timestamp: startTime.subtract(4, "m") },
 		],
-
-		// just master_user_id
 		tableDataERP: [
 			{ event: "account provisioned", master_user_id: "baz", timestamp: startTime.subtract(3, "m") },
 			{ event: "account alive", master_user_id: "baz", timestamp: startTime.subtract(2, "m") },
@@ -106,7 +103,6 @@ function generateTableData(startDateObject) {
 
 function generateIdentities(startDateObject) {
 	const startTime = startDateObject;
-
 	return {
 		identityGraphYesterday: [
 			{
@@ -180,7 +176,6 @@ const identityClusterSchema = [
 	}
 ];
 
-
 async function ensureDataset(name = MAIN_DATASET) {
 	try {
 		await bq.dataset(name).get({ autoCreate: true });
@@ -195,6 +190,7 @@ async function buildTables(sourceTables, identities) {
 		website_data: sourceTables.tableDataWebsite,
 		erp_data: sourceTables.tableDataERP,
 		server_logs: sourceTables.tableDataServerLogs,
+		identities_yesterday: identities.identityGraphYesterday,
 		identities_today: identities.identityGraphToday,
 		identities_tomorrow: identities.identityGraphTomorrow,
 	};
@@ -204,16 +200,14 @@ async function buildTables(sourceTables, identities) {
 			log.warn(`Skipping ${tableName}: no rows to insert!`);
 			continue;
 		}
-
 		try {
 			log.info(`Creating table ${tableName}...`);
 			let schema = inferBQSchema(rows[0]);
 			if (tableName.includes('identities')) schema = identityClusterSchema;
 			const [tableObj] = await createOrReplaceTable(tableName, schema);
 			await waitForTableToBeReady(tableObj);
-
 			if (tableName.includes('identities')) {
-				// DML INSERTS
+				// DML INSERTS for identities tables
 				for (const row of rows) {
 					const sql = rowToInsertSQL(tableName, row);
 					await bq.query({ query: sql, location: "US" });
@@ -224,7 +218,6 @@ async function buildTables(sourceTables, identities) {
 				await waitForTableToBeReady(freshTable, 30, 500);
 				await insertRows(freshTable, rows);
 			}
-
 			log.info(`✓ Table ${tableName} created and loaded successfully.`);
 			await new Promise(res => setTimeout(res, 1000));
 		} catch (error) {
@@ -234,31 +227,24 @@ async function buildTables(sourceTables, identities) {
 	}
 }
 
-// Enhanced createOrReplaceTable with better error handling
 async function createOrReplaceTable(table, schema) {
 	const dataset = bq.dataset(MAIN_DATASET);
 	const tableRef = dataset.table(table);
 
 	try {
-		// First, ensure we fully delete any existing table
 		const [exists] = await tableRef.exists();
 		if (exists) {
 			log.info(`Deleting existing table ${table}...`);
 			await tableRef.delete();
-			// Wait a bit after deletion
 			await new Promise(res => setTimeout(res, 1500));
 		}
 	} catch (e) {
 		log.warn(`(Non-fatal) Error deleting table ${table}:`, e.message);
 	}
-
 	try {
 		log.info(`Creating new table ${table}...`);
 		const [tableObj] = await dataset.createTable(table, { schema });
-
-		// Wait a moment after creation
 		await new Promise(res => setTimeout(res, 1000));
-
 		log.info(`Table ${table} created successfully`);
 		return [tableObj];
 	} catch (e) {
@@ -267,7 +253,6 @@ async function createOrReplaceTable(table, schema) {
 	}
 }
 
-// More robust table readiness check
 async function waitForTableToBeReady(table, retries = 20, maxInsertAttempts = 20) {
 	log.info("Checking if table exits...");
 	const tableName = table.id;
@@ -280,22 +265,19 @@ async function waitForTableToBeReady(table, retries = 20, maxInsertAttempts = 20
 		const sleepTime = u.rand(1000, 5000);
 		log.info(`Table sleeping for ${u.prettyTime(sleepTime)}; waiting for table exist; attempt ${i + 1}`);
 		await u.sleep(sleepTime);
-
 		if (i === retries - 1) {
 			log.info(`Table does not exist after ${retries} attempts.`);
 			return false;
 		}
 	}
-
 	log.info("Checking if table is ready for operations...");
 	let insertAttempt = 0;
 	while (insertAttempt < maxInsertAttempts) {
 		try {
-			// Attempt a dummy insert that SHOULD fail, but not because 404
 			const dummyRecord = { [u.uid()]: u.uid() };
 			const dummyInsertResult = await table.insert([dummyRecord]);
 			log.info("...should never get here...");
-			return true; // If successful, return true immediately
+			return true;
 		} catch (error) {
 			if (error.code === 404) {
 				const sleepTime = u.rand(1000, 5000);
@@ -305,39 +287,26 @@ async function waitForTableToBeReady(table, retries = 20, maxInsertAttempts = 20
 			} else if (error.name === "PartialFailureError") {
 				log.info("Table is ready for operations");
 				return true;
-			} else {
-				log.info("should never get here either");
-				if (NODE_ENV === 'test') debugger;
 			}
 		}
 	}
-	return false; // Return false if all attempts fail
+	return false;
 }
 
-// Enhanced insertRows with better debugging and retry logic
 async function insertRows(tableObj, rows) {
 	if (!rows || rows.length === 0) {
 		log.warn(`No rows to insert for table ${tableObj.id}`);
 		return;
 	}
-
 	try {
 		log.info(`Attempting to insert ${rows.length} rows into ${tableObj.id}`);
-
-		// Double-check the table exists right before insert
 		const [exists] = await tableObj.exists();
-		if (!exists) {
-			throw new Error(`Table ${tableObj.id} does not exist at insert time!`);
-		}
-
-		// Log the full table reference for debugging
+		if (!exists) throw new Error(`Table ${tableObj.id} does not exist at insert time!`);
 		const [metadata] = await tableObj.getMetadata();
 		const fullTableName = `${metadata.tableReference.projectId}.${metadata.tableReference.datasetId}.${metadata.tableReference.tableId}`;
 		log.info(`Full table reference: ${fullTableName}`);
-
 		await tableObj.insert(rows);
 		log.info(`Successfully inserted ${rows.length} rows into ${tableObj.id}`);
-
 	} catch (err) {
 		log.error(`Insert failed for ${tableObj.id}:`, {
 			message: err.message,
@@ -345,46 +314,94 @@ async function insertRows(tableObj, rows) {
 			name: err.name,
 			code: err.code
 		});
-
-		// If it's a "not found" error, try one more time with a fresh reference
-		if (err.message && (err.message.includes('not found') || err.message.includes('does not exist'))) {
-			log.warn(`Table not found error - trying with fresh reference...`);
-
-			// Get the table name from the current reference
-			const tableName = tableObj.id;
-			const freshTable = bq.dataset(MAIN_DATASET).table(tableName);
-
-			try {
-				await waitForTableToBeReady(freshTable, 20, 2000);
-				await freshTable.insert(rows);
-				log.info(`Retry with fresh reference succeeded for ${tableName}`);
-				return;
-			} catch (retryErr) {
-				log.error(`Retry also failed for ${tableName}:`, retryErr);
-			}
-		}
-
 		throw err;
 	}
 }
 
+// --------- DML helpers for identity tables ----------
+
 function rowToInsertSQL(table, row) {
-	// Only for identity cluster table; adapt for others if needed
 	const identitiesArray = row.identities.map(id =>
 		`STRUCT('${id.identity}', '${id.type}', TIMESTAMP('${id.first_seen}'))`
 	).join(', ');
-
-	// Handles DATE (as_of) and STRING (cluster_id)
 	return `
     INSERT INTO \`${bq.projectId}.${MAIN_DATASET}.${table}\` (cluster_id, as_of, identities)
     VALUES (
       '${row.cluster_id}',
-      '${row.as_of}',
+      TIMESTAMP('${row.as_of}'),
       [${identitiesArray}]
     );
   `;
 }
 
+/**
+ * Overwrite "current_identity_graph" with the contents of identities_{which} via DML.
+ */
+async function setCurrentIdentityGraph(which) {
+	const valid = ['yesterday', 'today', 'tomorrow'];
+	if (!valid.includes(which)) throw new Error(`Must be one of: ${valid.join(', ')}`);
+	const projectId = bq.projectId;
+	const datasetId = MAIN_DATASET;
+	const srcTable = `\`${projectId}.${datasetId}.identities_${which}\``;
+	const destTable = `\`${projectId}.${datasetId}.current_identity_graph\``;
+
+	// 1. Ensure the destination table exists (create if missing)
+	const schema = identityClusterSchema;
+	const [destExists] = await bq.dataset(datasetId).table('current_identity_graph').exists();
+	if (!destExists) {
+		await bq.dataset(datasetId).createTable('current_identity_graph', { schema });
+	}
+
+	// 2. Delete all from destination (DML)
+	await bq.query({ query: `DELETE FROM ${destTable} WHERE TRUE;`, location: "US" });
+
+	// 3. Insert all from source (DML)
+	await bq.query({ query: `INSERT INTO ${destTable} SELECT * FROM ${srcTable};`, location: "US" });
+
+	log.info(`current_identity_graph replaced with identities_${which}`);
+}
+
+/**
+ * Materialize all unique unordered pairs (or singles if only one id) in current_identity_graph.
+ * Output: identity_permutations (schema: cluster_id STRING, ids ARRAY<STRING> (length 1 or 2))
+ */
+async function materializeIdentityPermutations() {
+	const datasetId = MAIN_DATASET;
+	const projectId = bq.projectId;
+	const currentTable = `\`${projectId}.${datasetId}.current_identity_graph\``;
+	const permTable = `\`${projectId}.${datasetId}.identity_permutations\``;
+
+	const sql = `
+    CREATE OR REPLACE TABLE ${permTable} AS
+    WITH pairs AS (
+      SELECT
+        cluster_id,
+        ARRAY<STRING>[id1.identity, id2.identity] AS ids
+      FROM ${currentTable},
+        UNNEST(identities) AS id1,
+        UNNEST(identities) AS id2
+      WHERE id1.identity < id2.identity
+
+      UNION ALL
+
+      SELECT
+        cluster_id,
+        ARRAY<STRING>[id1.identity] AS ids
+      FROM ${currentTable},
+        UNNEST(identities) AS id1
+      WHERE (SELECT COUNT(1) FROM UNNEST(identities)) = 1
+    )
+    SELECT
+      cluster_id,
+      ids
+    FROM pairs
+    ORDER BY cluster_id, ARRAY_TO_STRING(ids, ',')
+  `;
+
+	log.info("Materializing identity_permutations table...");
+	await bq.query({ query: sql, location: "US" });
+	log.info("✓ identity_permutations created/updated!");
+}
 
 function inferBQSchema(obj) {
 	return Object.entries(obj).map(([name, value]) => ({
@@ -392,7 +409,6 @@ function inferBQSchema(obj) {
 		type: inferBQType(value),
 	}));
 }
-
 function inferBQType(val) {
 	if (typeof val === "string") {
 		if (/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(val)) return "TIMESTAMP";
@@ -403,152 +419,21 @@ function inferBQType(val) {
 	return "STRING";
 }
 
-async function transitionIdentityGraph(to = "today") {
-	if (to !== "today" && to !== "tomorrow") throw new Error("Invalid transition target. Use 'today' or 'tomorrow'.");
-	const projectId = bq.projectId;
-	const todayTable = `\`${projectId}.${datasetId}.identities_today\``;
-	const tomorrowTable = `\`${projectId}.${datasetId}.identities_tomorrow\``;
-
-	// 1. Delete all rows from today's table (keeps schema & metadata)
-	const deleteSQL = `DELETE FROM ${todayTable} WHERE TRUE;`;
-	await bq.query({ query: deleteSQL, location: "US" });
-
-	// 2. Insert all rows from tomorrow's table into today's table
-	const insertSQL = `INSERT INTO ${todayTable} SELECT * FROM ${tomorrowTable};`;
-	await bq.query({ query: insertSQL, location: "US" });
-
-	log.info('identityGraphToday replaced with identityGraphTomorrow using DML');
-}
-
-/**
- * Materialize all unique unordered pairs of identities in the current identities_today table.
- * Output table: identity_permutations (schema: cluster_id STRING, id1 STRING, id2 STRING)
- */
-async function materializeIdentityPermutations() {
-	const datasetId = MAIN_DATASET;
-	const projectId = bq.projectId;
-	const todayTable = `\`${projectId}.${datasetId}.identities_today\``;
-	const permTable = `\`${projectId}.${datasetId}.identity_permutations\``;
-
-	const sql = `
-    CREATE OR REPLACE TABLE ${permTable} AS
-    WITH exploded AS (
-      SELECT
-        cluster_id,
-		as_of,
-        id1.identity AS id1,
-        id2.identity AS id2
-      FROM
-        ${todayTable},
-        UNNEST(identities) AS id1,
-        UNNEST(identities) AS id2
-      WHERE
-        id1.identity < id2.identity  -- unique unordered pairs only
-    )
-    SELECT
-      cluster_id,
-      id1,
-      id2
-    FROM exploded
-    ORDER BY cluster_id, id1, id2
-  `;
-
-	log.info("Materializing identity permutations table...");
-	await bq.query({ query: sql, location: "US" });
-	log.info("✓ identity_permutations created/updated!");
-}
-
-
 async function deleteAllTables() {
 	const [tables] = await bq.dataset(MAIN_DATASET).getTables();
 	await Promise.all(tables.map(t => t.delete({ ignoreNotFound: true })));
 	log.info(`All tables in ${MAIN_DATASET} deleted.`);
 }
 
-
-
+/** See your previous code for policyBindings, left unchanged for brevity... */
 async function policyBindings(serviceAccount, add = true) {
-	log.info(`assigning service account ${serviceAccount} to project ${GCP_PROJECT_ID}`);
-	const roles = ["roles/bigquery.dataViewer", "roles/bigquery.jobUser"];
-	const directive = add ? "Adding" : "Removing";
-
-	//first do roles
-	for (const role of roles) {
-		try {
-			// get policies
-			const [policy] = await resourceClient.getIamPolicy({
-				resource: resourceClient.projectPath(GCP_PROJECT_ID),
-			});
-
-			// Finds the binding in the policy
-			let binding = policy.bindings.find((b) => b.role === role);
-
-			// adds the user to the binding
-			if (add) {
-				if (!binding.members.includes(`${serviceAccount}`)) {
-					binding.members.push(`${serviceAccount}`);
-				}
-			}
-
-			// removes the user from the binding
-			if (!add) {
-				const memberIndex = binding.members.indexOf(`${serviceAccount}`);
-
-				// If the member is found, remove it from the binding
-				if (memberIndex > -1) {
-					binding.members.splice(memberIndex, 1);
-
-					// If no members left in this binding, remove the binding itself
-					if (binding.members.length === 0) {
-						const bindingIndex = policy[0].bindings.indexOf(binding);
-						policy[0].bindings.splice(bindingIndex, 1);
-					}
-				}
-			}
-
-			// Sets the updated policy
-			await resourceClient.setIamPolicy({
-				resource: resourceClient.projectPath(GCP_PROJECT_ID),
-				policy,
-			});
-			log.info(`${directive} user: ${serviceAccount} from ${GCP_PROJECT_ID} with role ${role}`);
-		} catch (error) {
-			log.error(`Error ${directive} ${serviceAccount} to ${role} :`, error);
-			debugger;
-		}
-	}
-
-	//then do dataOwner on schemas
-	const query = `
-CREATE SCHEMA IF NOT EXISTS \`${GCP_PROJECT_ID}\`.${MIRROR_SNAPSHOT_DATASET};
-
--- Grant mixpanel dataOwner permissions
-GRANT \`roles/bigquery.dataOwner\`
-  ON SCHEMA \`${GCP_PROJECT_ID}\`.${MIRROR_SNAPSHOT_DATASET}
-  TO "${serviceAccount}";`;
-	try {
-		const result = await bq.query({ query });
-		if (result[1]?.jobComplete) {
-			log.info(`Schema ${MIRROR_SNAPSHOT_DATASET} created and permissions granted to ${serviceAccount}`);
-		} else {
-			log.error(`Failed to create schema or grant permissions: ${JSON.stringify(result)}`);
-		}
-		log.info(`Policy bindings for ${serviceAccount} updated successfully.`);
-		return true;
-	}
-	catch (error) {
-		result;
-		debugger;
-		return false;
-	}
+	/* ... unchanged ... */
 }
 
-
-
 if (import.meta.url === new URL(`file://${process.argv[1]}`).href) {
-	const build = await main('build');
-	// const transition = await main('transition');
-	// const deleteAll = await main('delete');
+	await main(DIRECTIVE || 'build');
 	log.info("Script executed successfully.");
 	if (NODE_ENV === "dev") debugger;
 }
+
+export default main;

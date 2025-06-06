@@ -4,7 +4,10 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "delete": "DIRECTIVE=delete node index.js",
+	"build": "DIRECTIVE=build node index.js",
+	"trans:today": "DIRECTIVE=transition-today node index.js",
+	"trans:tomorrow": "DIRECTIVE=transition-tomorrow node index.js"
   },
   "keywords": [],
   "author": "",

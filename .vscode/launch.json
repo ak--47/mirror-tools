@@ -33,14 +33,27 @@
         {
             "type": "node",
             "request": "launch",
-            "name": "transition",
+            "name": "transition-today",
             "runtimeExecutable": "node",
             "program": "${workspaceFolder}/index.js",
             "restart": true,
             "console": "integratedTerminal",
             "internalConsoleOptions": "neverOpen",
             "env": {
-                "DIRECTIVE": "transition"
+                "DIRECTIVE": "transition-today"
+            }
+        },
+		 {
+            "type": "node",
+            "request": "launch",
+            "name": "transition-tomorrow",
+            "runtimeExecutable": "node",
+            "program": "${workspaceFolder}/index.js",
+            "restart": true,
+            "console": "integratedTerminal",
+            "internalConsoleOptions": "neverOpen",
+            "env": {
+                "DIRECTIVE": "transition-tomorrow"
             }
         },
         {
