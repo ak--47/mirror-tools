@@ -12,6 +12,7 @@
   "description": "",
   "dependencies": {
     "@google-cloud/bigquery": "^8.1.0",
+    "@google-cloud/resource-manager": "^6.1.0",
     "ak-tools": "^1.0.7",
     "chance": "^1.1.13",
     "dayjs": "^1.11.13",

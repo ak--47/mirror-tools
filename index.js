@@ -9,35 +9,49 @@
  * tomorrow, we want to transition the identity graph such that baz is merged into the cluster
  */
 
-
-
 import { BigQuery } from "@google-cloud/bigquery";
+import { ProjectsClient } from "@google-cloud/resource-manager";
+
 import u from "ak-tools";
 import dayjs from "dayjs";
 import utc from "dayjs/plugin/utc.js";
 dayjs.extend(utc);
 import log from './logger.js';
 let { NODE_ENV, DIRECTIVE = "" } = process.env;
-const DATASET = "mirror_mode_fun";
-const bq = new BigQuery({ projectId: "mixpanel-gtm-training" });
+
+const GCP_PROJECT_ID = "mixpanel-gtm-training";
+const MAIN_DATASET = "mirror_mode_modeling_fun";
+const MIRROR_SNAPSHOT_DATASET = "mirror_mode_snapshots";
+const MIXPANEL_PROJECT_ID = "3739108";
+
+const resourceClient = new ProjectsClient({ projectId: GCP_PROJECT_ID });
+const bq = new BigQuery({ projectId: GCP_PROJECT_ID });
+
+
 
 async function main(directive = "build") {
 	if (DIRECTIVE) directive = DIRECTIVE.toLowerCase();
+	log.info(`Running directive: ${directive}`);
 	const startTime = dayjs.utc().subtract(7, "day");
 	const sourceTables = generateTableData(startTime);
 	const identities = generateIdentities(startTime);
 
+	log.info("Checking datasets...");
+	await ensureDataset(MAIN_DATASET);
+	await ensureDataset(MIRROR_SNAPSHOT_DATASET);
+
+	const serviceAccount = `serviceAccount:project-${MIXPANEL_PROJECT_ID}@mixpanel-warehouse-1.iam.gserviceaccount.com`;
+
 	switch (directive) {
 		case "build":
 			log.info("Building tables from source data.");
-			await ensureDataset();
+			await policyBindings(serviceAccount, true);
 			await buildTables(sourceTables, identities);
 			await materializeIdentityPermutations();
 			break;
 
 		case "transition":
 			log.info("Transitioning tables to the next day.");
-			await ensureDataset();
 			await transitionIdentityGraph();
 			await materializeIdentityPermutations();
 			break;
@@ -94,6 +108,19 @@ function generateIdentities(startDateObject) {
 	const startTime = startDateObject;
 
 	return {
+		identityGraphYesterday: [
+			{
+				cluster_id: "something_unique_123",
+				as_of: startTime.subtract(1, "day").toISOString(),
+				identities: [
+					{
+						identity: "foo",
+						type: "anon_id",
+						first_seen: startTime.subtract(10, "m").toISOString(),
+					}
+				]
+			}
+		],
 		identityGraphToday: [
 			{
 				cluster_id: "something_unique_123",
@@ -154,9 +181,9 @@ const identityClusterSchema = [
 ];
 
 
-async function ensureDataset() {
+async function ensureDataset(name = MAIN_DATASET) {
 	try {
-		await bq.dataset(DATASET).get({ autoCreate: true });
+		await bq.dataset(name).get({ autoCreate: true });
 	} catch (e) {
 		log.error("Failed to create or get dataset:", e);
 		throw e;
@@ -182,7 +209,7 @@ async function buildTables(sourceTables, identities) {
 			log.info(`Creating table ${tableName}...`);
 			let schema = inferBQSchema(rows[0]);
 			if (tableName.includes('identities')) schema = identityClusterSchema;
-			const [tableObj] = await createOrReplaceTable(tableName, schema);			
+			const [tableObj] = await createOrReplaceTable(tableName, schema);
 			await waitForTableToBeReady(tableObj);
 
 			if (tableName.includes('identities')) {
@@ -193,7 +220,7 @@ async function buildTables(sourceTables, identities) {
 				}
 			} else {
 				// Still use streaming for non-identity tables (or migrate if you want)
-				const freshTable = bq.dataset(DATASET).table(tableName);
+				const freshTable = bq.dataset(MAIN_DATASET).table(tableName);
 				await waitForTableToBeReady(freshTable, 30, 500);
 				await insertRows(freshTable, rows);
 			}
@@ -209,7 +236,7 @@ async function buildTables(sourceTables, identities) {
 
 // Enhanced createOrReplaceTable with better error handling
 async function createOrReplaceTable(table, schema) {
-	const dataset = bq.dataset(DATASET);
+	const dataset = bq.dataset(MAIN_DATASET);
 	const tableRef = dataset.table(table);
 
 	try {
@@ -325,7 +352,7 @@ async function insertRows(tableObj, rows) {
 
 			// Get the table name from the current reference
 			const tableName = tableObj.id;
-			const freshTable = bq.dataset(DATASET).table(tableName);
+			const freshTable = bq.dataset(MAIN_DATASET).table(tableName);
 
 			try {
 				await waitForTableToBeReady(freshTable, 20, 2000);
@@ -349,7 +376,7 @@ function rowToInsertSQL(table, row) {
 
 	// Handles DATE (as_of) and STRING (cluster_id)
 	return `
-    INSERT INTO \`${bq.projectId}.${DATASET}.${table}\` (cluster_id, as_of, identities)
+    INSERT INTO \`${bq.projectId}.${MAIN_DATASET}.${table}\` (cluster_id, as_of, identities)
     VALUES (
       '${row.cluster_id}',
       '${row.as_of}',
@@ -376,8 +403,8 @@ function inferBQType(val) {
 	return "STRING";
 }
 
-async function transitionIdentityGraph() {
-	const datasetId = DATASET;
+async function transitionIdentityGraph(to = "today") {
+	if (to !== "today" && to !== "tomorrow") throw new Error("Invalid transition target. Use 'today' or 'tomorrow'.");
 	const projectId = bq.projectId;
 	const todayTable = `\`${projectId}.${datasetId}.identities_today\``;
 	const tomorrowTable = `\`${projectId}.${datasetId}.identities_tomorrow\``;
@@ -398,7 +425,7 @@ async function transitionIdentityGraph() {
  * Output table: identity_permutations (schema: cluster_id STRING, id1 STRING, id2 STRING)
  */
 async function materializeIdentityPermutations() {
-	const datasetId = DATASET;
+	const datasetId = MAIN_DATASET;
 	const projectId = bq.projectId;
 	const todayTable = `\`${projectId}.${datasetId}.identities_today\``;
 	const permTable = `\`${projectId}.${datasetId}.identity_permutations\``;
@@ -433,10 +460,90 @@ async function materializeIdentityPermutations() {
 
 
 async function deleteAllTables() {
-	const [tables] = await bq.dataset(DATASET).getTables();
+	const [tables] = await bq.dataset(MAIN_DATASET).getTables();
 	await Promise.all(tables.map(t => t.delete({ ignoreNotFound: true })));
-	log.info(`All tables in ${DATASET} deleted.`);
+	log.info(`All tables in ${MAIN_DATASET} deleted.`);
 }
+
+
+
+async function policyBindings(serviceAccount, add = true) {
+	log.info(`assigning service account ${serviceAccount} to project ${GCP_PROJECT_ID}`);
+	const roles = ["roles/bigquery.dataViewer", "roles/bigquery.jobUser"];
+	const directive = add ? "Adding" : "Removing";
+
+	//first do roles
+	for (const role of roles) {
+		try {
+			// get policies
+			const [policy] = await resourceClient.getIamPolicy({
+				resource: resourceClient.projectPath(GCP_PROJECT_ID),
+			});
+
+			// Finds the binding in the policy
+			let binding = policy.bindings.find((b) => b.role === role);
+
+			// adds the user to the binding
+			if (add) {
+				if (!binding.members.includes(`${serviceAccount}`)) {
+					binding.members.push(`${serviceAccount}`);
+				}
+			}
+
+			// removes the user from the binding
+			if (!add) {
+				const memberIndex = binding.members.indexOf(`${serviceAccount}`);
+
+				// If the member is found, remove it from the binding
+				if (memberIndex > -1) {
+					binding.members.splice(memberIndex, 1);
+
+					// If no members left in this binding, remove the binding itself
+					if (binding.members.length === 0) {
+						const bindingIndex = policy[0].bindings.indexOf(binding);
+						policy[0].bindings.splice(bindingIndex, 1);
+					}
+				}
+			}
+
+			// Sets the updated policy
+			await resourceClient.setIamPolicy({
+				resource: resourceClient.projectPath(GCP_PROJECT_ID),
+				policy,
+			});
+			log.info(`${directive} user: ${serviceAccount} from ${GCP_PROJECT_ID} with role ${role}`);
+		} catch (error) {
+			log.error(`Error ${directive} ${serviceAccount} to ${role} :`, error);
+			debugger;
+		}
+	}
+
+	//then do dataOwner on schemas
+	const query = `
+CREATE SCHEMA IF NOT EXISTS \`${GCP_PROJECT_ID}\`.${MIRROR_SNAPSHOT_DATASET};
+
+-- Grant mixpanel dataOwner permissions
+GRANT \`roles/bigquery.dataOwner\`
+  ON SCHEMA \`${GCP_PROJECT_ID}\`.${MIRROR_SNAPSHOT_DATASET}
+  TO "${serviceAccount}";`;
+	try {
+		const result = await bq.query({ query });
+		if (result[1]?.jobComplete) {
+			log.info(`Schema ${MIRROR_SNAPSHOT_DATASET} created and permissions granted to ${serviceAccount}`);
+		} else {
+			log.error(`Failed to create schema or grant permissions: ${JSON.stringify(result)}`);
+		}
+		log.info(`Policy bindings for ${serviceAccount} updated successfully.`);
+		return true;
+	}
+	catch (error) {
+		result;
+		debugger;
+		return false;
+	}
+}
+
+
 
 if (import.meta.url === new URL(`file://${process.argv[1]}`).href) {
 	const build = await main('build');
