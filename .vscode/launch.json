@@ -1,0 +1,21 @@
+{
+	"configurations": [
+		{
+			"type": "node",
+			"request": "launch",
+			"name": "dev",
+			"runtimeExecutable": "nodemon",
+			"program": "${file}",
+			"restart": true,
+			"console": "integratedTerminal",
+			"internalConsoleOptions": "neverOpen",
+			"env": {
+				"NODE_ENV": "dev"
+			},
+			"runtimeArgs": [
+				"--ignore",
+				"./tmp"
+			]
+		}
+	]
+}

@@ -1,0 +1,23 @@
+{
+  "name": "mirror-tools",
+  "version": "1.0.0",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@google-cloud/bigquery": "^8.1.0",
+    "ak-tools": "^1.0.7",
+    "chance": "^1.1.13",
+    "dayjs": "^1.11.13",
+    "pino": "^9.7.0"
+  },
+  "devDependencies": {
+    "pino-pretty": "^13.0.0"
+  }
+}
