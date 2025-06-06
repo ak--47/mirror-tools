@@ -437,9 +437,81 @@ async function deleteAllTables() {
 	log.info(`All tables in ${MAIN_DATASET} deleted.`);
 }
 
-/** See your previous code for policyBindings, left unchanged for brevity... */
+
 async function policyBindings(serviceAccount, add = true) {
-	/* ... unchanged ... */
+	log.info(`assigning service account ${serviceAccount} to project ${GCP_PROJECT_ID}`);
+	const roles = ["roles/bigquery.dataViewer", "roles/bigquery.jobUser"];
+	const directive = add ? "Adding" : "Removing";
+
+	//first do roles
+	for (const role of roles) {
+		try {
+			// get policies
+			const [policy] = await resourceClient.getIamPolicy({
+				resource: resourceClient.projectPath(GCP_PROJECT_ID),
+			});
+
+			// Finds the binding in the policy
+			let binding = policy.bindings.find((b) => b.role === role);
+
+			// adds the user to the binding
+			if (add) {
+				if (!binding.members.includes(`${serviceAccount}`)) {
+					binding.members.push(`${serviceAccount}`);
+				}
+			}
+
+			// removes the user from the binding
+			if (!add) {
+				const memberIndex = binding.members.indexOf(`${serviceAccount}`);
+
+				// If the member is found, remove it from the binding
+				if (memberIndex > -1) {
+					binding.members.splice(memberIndex, 1);
+
+					// If no members left in this binding, remove the binding itself
+					if (binding.members.length === 0) {
+						const bindingIndex = policy[0].bindings.indexOf(binding);
+						policy[0].bindings.splice(bindingIndex, 1);
+					}
+				}
+			}
+
+			// Sets the updated policy
+			await resourceClient.setIamPolicy({
+				resource: resourceClient.projectPath(GCP_PROJECT_ID),
+				policy,
+			});
+			log.info(`${directive} user: ${serviceAccount} from ${GCP_PROJECT_ID} with role ${role}`);
+		} catch (error) {
+			log.error(`Error ${directive} ${serviceAccount} to ${role} :`, error);
+			debugger;
+		}
+	}
+
+	//then do dataOwner on schemas
+	const query = `
+CREATE SCHEMA IF NOT EXISTS \`${GCP_PROJECT_ID}\`.${MIRROR_SNAPSHOT_DATASET};
+
+-- Grant mixpanel dataOwner permissions
+GRANT \`roles/bigquery.dataOwner\`
+  ON SCHEMA \`${GCP_PROJECT_ID}\`.${MIRROR_SNAPSHOT_DATASET}
+  TO "${serviceAccount}";`;
+	try {
+		const result = await bq.query({ query });
+		if (result[1]?.jobComplete) {
+			log.info(`Schema ${MIRROR_SNAPSHOT_DATASET} created and permissions granted to ${serviceAccount}`);
+		} else {
+			log.error(`Failed to create schema or grant permissions: ${JSON.stringify(result)}`);
+		}
+		log.info(`Policy bindings for ${serviceAccount} updated successfully.`);
+		return true;
+	}
+	catch (error) {
+		result;
+		debugger;
+		return false;
+	}
 }
 
 if (import.meta.url === new URL(`file://${process.argv[1]}`).href) {
