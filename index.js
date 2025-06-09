@@ -79,12 +79,13 @@ async function main(directive = "build") {
 
 function generateTableData(startDateObject) {
 	const startTime = startDateObject.startOf('day'); // anchor at start of demo day
-	return {
+	const data = {
 		tableDataWebsite: [
 			{ event: "page view", anon_id: "foo", user_id: null, timestamp: startTime.add(8, "hour") }, // 8:00 AM
 			{ event: "scroll", anon_id: "foo", timestamp: startTime.add(8, "hour").add(1, "m") },
 			{ event: "click", anon_id: "foo", timestamp: startTime.add(8, "hour").add(2, "m") },
 			{ event: "dropdown", anon_id: "foo", timestamp: startTime.add(8, "hour").add(3, "m") },
+			
 			// Later, logs in as bar
 			{ event: "log in", user_id: "bar", timestamp: startTime.add(8, "hour").add(5, "m") },
 			{ event: "doing stuff", user_id: "bar", timestamp: startTime.add(8, "hour").add(6, "m") },
@@ -100,6 +101,13 @@ function generateTableData(startDateObject) {
 			{ event: "server stopped", master_user_id: "qux", timestamp: startTime.add(18, "hour").add(5, "m") },
 		]
 	};
+
+	for (const t in data) sourceTables[t].forEach((row) => { 
+		row.timestamp = row.timestamp.toISOString(); 
+		if (row.anon_id) row.identity = row.anon_id;
+		if (row.user_id) row.identity = row.user_id;
+	});
+	return data;
 }
 
 // Now each identity's first_seen exactly matches their first event:
