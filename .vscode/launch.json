@@ -1,73 +1,86 @@
 {
-    "configurations": [
-        {
-            "type": "node",
-            "request": "launch",
-            "name": "dev",
-            "runtimeExecutable": "nodemon",
-            "program": "${file}",
-            "restart": true,
-            "console": "integratedTerminal",
-            "internalConsoleOptions": "neverOpen",
-            "env": {
-                "NODE_ENV": "dev"
-            },
-            "runtimeArgs": [
-                "--ignore",
-                "./tmp"
-            ]
-        },
-        {
-            "type": "node",
-            "request": "launch",
-            "name": "build",
-            "runtimeExecutable": "node",
-            "program": "${workspaceFolder}/index.js",
-            "restart": true,
-            "console": "integratedTerminal",
-            "internalConsoleOptions": "neverOpen",
-            "env": {
-                "DIRECTIVE": "build"
-            }
-        },
-        {
-            "type": "node",
-            "request": "launch",
-            "name": "transition-today",
-            "runtimeExecutable": "node",
-            "program": "${workspaceFolder}/index.js",
-            "restart": true,
-            "console": "integratedTerminal",
-            "internalConsoleOptions": "neverOpen",
-            "env": {
-                "DIRECTIVE": "transition-today"
-            }
-        },
-		 {
-            "type": "node",
-            "request": "launch",
-            "name": "transition-tomorrow",
-            "runtimeExecutable": "node",
-            "program": "${workspaceFolder}/index.js",
-            "restart": true,
-            "console": "integratedTerminal",
-            "internalConsoleOptions": "neverOpen",
-            "env": {
-                "DIRECTIVE": "transition-tomorrow"
-            }
-        },
-        {
-            "type": "node",
-            "request": "launch",
-            "name": "delete",
-            "runtimeExecutable": "node",
-            "program": "${workspaceFolder}/index.js",
-            "restart": true,
-            "console": "integratedTerminal",
-            "internalConsoleOptions": "neverOpen",
-            "env": {
-                "DIRECTIVE": "delete"
-            }
-        }
-    ]
+	"configurations": [
+		{
+			"type": "node",
+			"request": "launch",
+			"name": "dev",
+			"runtimeExecutable": "nodemon",
+			"program": "${file}",
+			"restart": true,
+			"console": "integratedTerminal",
+			"internalConsoleOptions": "neverOpen",
+			"env": {
+				"NODE_ENV": "dev"
+			},
+			"runtimeArgs": [
+				"--ignore",
+				"./tmp"
+			]
+		},
+		{
+			"type": "node",
+			"request": "launch",
+			"name": "build",
+			"runtimeExecutable": "node",
+			"program": "${workspaceFolder}/index.js",
+			"restart": true,
+			"console": "integratedTerminal",
+			"internalConsoleOptions": "neverOpen",
+			"env": {
+				"DIRECTIVE": "build"
+			}
+		},
+		{
+			"type": "node",
+			"request": "launch",
+			"name": "transition-today",
+			"runtimeExecutable": "node",
+			"program": "${workspaceFolder}/index.js",
+			"restart": true,
+			"console": "integratedTerminal",
+			"internalConsoleOptions": "neverOpen",
+			"env": {
+				"DIRECTIVE": "transition-today"
+			}
+		},
+		{
+			"type": "node",
+			"request": "launch",
+			"name": "transition-tomorrow",
+			"runtimeExecutable": "node",
+			"program": "${workspaceFolder}/index.js",
+			"restart": true,
+			"console": "integratedTerminal",
+			"internalConsoleOptions": "neverOpen",
+			"env": {
+				"DIRECTIVE": "transition-tomorrow"
+			}
+		},
+		{
+			"type": "node",
+			"request": "launch",
+			"name": "transition-day-after-tomorrow",
+			"runtimeExecutable": "node",
+			"program": "${workspaceFolder}/index.js",
+			"restart": true,
+			"console": "integratedTerminal",
+			"internalConsoleOptions": "neverOpen",
+			"env": {
+				"DIRECTIVE": "transition-day-after-tomorrow"
+			}
+		},
+		{
+			"type": "node",
+			"request": "launch",
+			"name": "delete",
+			"runtimeExecutable": "node",
+			"program": "${workspaceFolder}/index.js",
+			"restart": true,
+			"console": "integratedTerminal",
+			"internalConsoleOptions": "neverOpen",
+			"env": {
+				"DIRECTIVE": "delete"
+			}
+		}
+	]
 }

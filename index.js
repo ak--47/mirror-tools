@@ -3,10 +3,6 @@
  * can be used to build a data pipeline that transitions
  * from one day's identity graph to the next, while retroactively
  * associating events with identities.
- * 
- * basically when we first build we have two users with fragmented events
- * foo => bar  .... and baz stands alone
- * tomorrow, we want to transition the identity graph such that baz is merged into the cluster
  */
 
 import { BigQuery } from "@google-cloud/bigquery";
@@ -61,6 +57,12 @@ async function main(directive = "build") {
 			await materializeIdentityPermutations();
 			break;
 
+		case "transition-day-after-tomorrow":
+			log.info("Transitioning to day after tomorrow's graph.");
+			await setCurrentIdentityGraph('day_after_tomorrow');
+			await materializeIdentityPermutations();
+			break;
+
 		case "delete":
 			log.info("Deleting all tables and identities to start over.");
 			await deleteAllTables();
@@ -76,33 +78,35 @@ async function main(directive = "build") {
 }
 
 function generateTableData(startDateObject) {
-	const startTime = startDateObject;
-	const sourceTables = {
+	const startTime = startDateObject.startOf('day'); // anchor at start of demo day
+	return {
 		tableDataWebsite: [
-			{ event: "page view", anon_id: "foo", user_id: null, timestamp: startTime.subtract(10, "m") },
-			{ event: "scroll", anon_id: "foo", timestamp: startTime.subtract(9, "m") },
-			{ event: "click", anon_id: "foo", timestamp: startTime.subtract(8, "m") },
-			{ event: "dropdown", anon_id: "foo", timestamp: startTime.subtract(7, "m") },
-			{ event: "log in", user_id: "bar", timestamp: startTime.subtract(7, "m") },
-			{ event: "doing stuff", user_id: "bar", timestamp: startTime.subtract(6, "m") },
-			{ event: "doing more stuff", user_id: "bar", timestamp: startTime.subtract(5, "m") },
-			{ event: "doing even more stuff", user_id: "bar", timestamp: startTime.subtract(4, "m") },
+			{ event: "page view", anon_id: "foo", user_id: null, timestamp: startTime.add(8, "hour") }, // 8:00 AM
+			{ event: "scroll", anon_id: "foo", timestamp: startTime.add(8, "hour").add(1, "m") },
+			{ event: "click", anon_id: "foo", timestamp: startTime.add(8, "hour").add(2, "m") },
+			{ event: "dropdown", anon_id: "foo", timestamp: startTime.add(8, "hour").add(3, "m") },
+			// Later, logs in as bar
+			{ event: "log in", user_id: "bar", timestamp: startTime.add(8, "hour").add(5, "m") },
+			{ event: "doing stuff", user_id: "bar", timestamp: startTime.add(8, "hour").add(6, "m") },
+			{ event: "doing more stuff", user_id: "bar", timestamp: startTime.add(8, "hour").add(7, "m") },
+			{ event: "doing even more stuff", user_id: "bar", timestamp: startTime.add(8, "hour").add(8, "m") },
 		],
-		tableDataERP: [
-			{ event: "account provisioned", master_user_id: "baz", timestamp: startTime.subtract(3, "m") },
-			{ event: "account alive", master_user_id: "baz", timestamp: startTime.subtract(2, "m") },
+		tableDataCRM: [
+			{ event: "lead created", crm_user_id: "baz", timestamp: startTime.add(12, "hour") }, // Noon
+			{ event: "campaign assigned", crm_user_id: "baz", timestamp: startTime.add(12, "hour").add(2, "m") },
 		],
 		tableDataServerLogs: [
-			{ event: "server started", master_user_id: "baz", timestamp: startTime.subtract(1, "m") },
-			{ event: "server stopped", master_user_id: "baz", timestamp: startTime.subtract(30, "s") },
+			{ event: "server started", master_user_id: "qux", timestamp: startTime.add(18, "hour") }, // 6:00 PM
+			{ event: "server stopped", master_user_id: "qux", timestamp: startTime.add(18, "hour").add(5, "m") },
 		]
 	};
-	for (const t in sourceTables) sourceTables[t].forEach((row) => { row.timestamp = row.timestamp.toISOString(); });
-	return sourceTables;
 }
 
+// Now each identity's first_seen exactly matches their first event:
+
 function generateIdentities(startDateObject) {
-	const startTime = startDateObject;
+	const startTime = startDateObject.startOf('day');
+
 	return {
 		identityGraphYesterday: [
 			{
@@ -112,7 +116,7 @@ function generateIdentities(startDateObject) {
 					{
 						identity: "foo",
 						type: "anon_id",
-						first_seen: startTime.subtract(10, "m").toISOString(),
+						first_seen: startTime.add(8, "hour").toISOString(), // 8:00 AM
 					}
 				]
 			}
@@ -120,17 +124,17 @@ function generateIdentities(startDateObject) {
 		identityGraphToday: [
 			{
 				cluster_id: "something_unique_123",
-				as_of: startTime.subtract(5, "m").toISOString(),
+				as_of: startTime.toISOString(),
 				identities: [
 					{
 						identity: "foo",
 						type: "anon_id",
-						first_seen: startTime.subtract(10, "m").toISOString(),
+						first_seen: startTime.add(8, "hour").toISOString(), // 8:00 AM
 					},
 					{
 						identity: "bar",
 						type: "user_id",
-						first_seen: startTime.subtract(7, "m").toISOString(),
+						first_seen: startTime.add(8, "hour").add(5, "m").toISOString(), // log in event
 					}
 				]
 			}
@@ -143,17 +147,45 @@ function generateIdentities(startDateObject) {
 					{
 						identity: "foo",
 						type: "anon_id",
-						first_seen: startTime.subtract(10, "m").toISOString(),
+						first_seen: startTime.add(8, "hour").toISOString(),
 					},
 					{
 						identity: "bar",
 						type: "user_id",
-						first_seen: startTime.subtract(7, "m").toISOString(),
+						first_seen: startTime.add(8, "hour").add(5, "m").toISOString(),
 					},
 					{
 						identity: "baz",
+						type: "crm_user_id",
+						first_seen: startTime.add(12, "hour").toISOString(),
+					}
+				]
+			}
+		],
+		identityGraphDayAfterTomorrow: [
+			{
+				cluster_id: "something_unique_123",
+				as_of: startTime.add(2, "day").toISOString(),
+				identities: [
+					{
+						identity: "foo",
+						type: "anon_id",
+						first_seen: startTime.add(8, "hour").toISOString(),
+					},
+					{
+						identity: "bar",
+						type: "user_id",
+						first_seen: startTime.add(8, "hour").add(5, "m").toISOString(),
+					},
+					{
+						identity: "baz",
+						type: "crm_user_id",
+						first_seen: startTime.add(12, "hour").toISOString(),
+					},
+					{
+						identity: "qux",
 						type: "master_user_id",
-						first_seen: startTime.subtract(3, "m").toISOString(),
+						first_seen: startTime.add(18, "hour").toISOString(),
 					}
 				]
 			}
@@ -188,11 +220,12 @@ async function ensureDataset(name = MAIN_DATASET) {
 async function buildTables(sourceTables, identities) {
 	const tablesToData = {
 		website_data: sourceTables.tableDataWebsite,
-		erp_data: sourceTables.tableDataERP,
+		crm_data: sourceTables.tableDataCRM,
 		server_logs: sourceTables.tableDataServerLogs,
 		identities_yesterday: identities.identityGraphYesterday,
 		identities_today: identities.identityGraphToday,
 		identities_tomorrow: identities.identityGraphTomorrow,
+		identities_day_after_tomorrow: identities.identityGraphDayAfterTomorrow,
 	};
 
 	for (const [tableName, rows] of Object.entries(tablesToData)) {
@@ -338,7 +371,7 @@ function rowToInsertSQL(table, row) {
  * Overwrite "current_identity_graph" with the contents of identities_{which} via DML.
  */
 async function setCurrentIdentityGraph(which) {
-	const valid = ['yesterday', 'today', 'tomorrow'];
+	const valid = ['yesterday', 'today', 'tomorrow', 'day_after_tomorrow'];
 	if (!valid.includes(which)) throw new Error(`Must be one of: ${valid.join(', ')}`);
 	const projectId = bq.projectId;
 	const datasetId = MAIN_DATASET;
@@ -376,7 +409,7 @@ async function materializeIdentityPermutations() {
     WITH ids_with_idx AS (
       SELECT
         cluster_id,
-        identities,
+        as_of,
         ARRAY(
           SELECT AS STRUCT id.identity, id.type, id.first_seen
           FROM UNNEST(identities) AS id
@@ -385,9 +418,10 @@ async function materializeIdentityPermutations() {
       FROM ${currentTable}
     ),
     pairs AS (
-      -- Chain pairs
+      -- Chain pairs for N > 1
       SELECT
         cluster_id,
+        as_of,
         ARRAY<STRING>[sorted_ids[OFFSET(i-1)].identity, sorted_ids[OFFSET(i)].identity] AS ids
       FROM ids_with_idx,
       UNNEST(GENERATE_ARRAY(1, ARRAY_LENGTH(sorted_ids)-1)) AS i
@@ -398,22 +432,25 @@ async function materializeIdentityPermutations() {
       -- Single identity cluster
       SELECT
         cluster_id,
+        as_of,
         ARRAY<STRING>[sorted_ids[OFFSET(0)].identity] AS ids
       FROM ids_with_idx
       WHERE ARRAY_LENGTH(sorted_ids) = 1
     )
     SELECT
       cluster_id,
-      ids
+      as_of,
+      ids,
+      ids[OFFSET(0)] AS on_behalf_of,
+      JSON_OBJECT('$distinct_ids', ids) AS distinct_ids_json
     FROM pairs
-    ORDER BY cluster_id, ARRAY_TO_STRING(ids, ',')
+    ORDER BY cluster_id, as_of, ARRAY_TO_STRING(ids, ',')
   `;
 
 	log.info("Materializing identity_permutations table...");
 	await bq.query({ query: sql, location: "US" });
 	log.info("✓ identity_permutations created/updated!");
 }
-
 
 function inferBQSchema(obj) {
 	return Object.entries(obj).map(([name, value]) => ({
@@ -437,10 +474,10 @@ async function deleteAllTables() {
 	log.info(`All tables in ${MAIN_DATASET} deleted.`);
 }
 
-
 async function policyBindings(serviceAccount, add = true) {
 	log.info(`assigning service account ${serviceAccount} to project ${GCP_PROJECT_ID}`);
 	const roles = ["roles/bigquery.dataViewer", "roles/bigquery.jobUser"];
+	const mirrorRoles = ["roles/bigquery.dataOwner"];
 	const directive = add ? "Adding" : "Removing";
 
 	//first do roles
