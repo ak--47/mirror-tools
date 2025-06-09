@@ -102,7 +102,7 @@ function generateTableData(startDateObject) {
 		]
 	};
 
-	for (const t in data) sourceTables[t].forEach((row) => { 
+	for (const t in data) data[t].forEach((row) => { 
 		row.timestamp = row.timestamp.toISOString(); 
 		if (row.anon_id) row.identity = row.anon_id;
 		if (row.user_id) row.identity = row.user_id;
